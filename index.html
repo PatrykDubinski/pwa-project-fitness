@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="pl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="description" content="Fitness Tracker - Śledź swoje treningi offline">
+    <title>Fitness Tracker</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+    <div class="status-bar" id="statusBar">
+        Tryb offline - niektóre funkcje mogą być niedostępne
+    </div>
+
+    <header>
+        <div class="container">
+            <h1>Fitness Tracker</h1>
+        </div>
+    </header>
+
+    <div class="view active" id="dashboardView">
+        <div class="container">
+            <div class="notification-permission" id="notificationPrompt">
+                <p><strong>Włącz powiadomienia</strong> aby otrzymywać przypomnienia o treningach!</p>
+                <button class="btn btn-secondary" onclick="app.requestNotificationPermission()">Włącz
+                    powiadomienia</button>
+            </div>
+
+            <div class="card">
+                <h2>Twoje Treningi</h2>
+                <p style="color: var(--text-light); margin-top: 0.5rem;">
+                    Śledź swoje postępy i osiągaj cele!
+                </p>
+            </div>
+
+            <div id="workoutsList"></div>
+        </div>
+
+        <button class="fab" onclick="app.showView('addView')" aria-label="Dodaj trening">+</button>
+    </div>
+
+    <div class="view" id="addView">
+        <div class="container">
+            <div class="card">
+                <h2>Nowy Trening</h2>
+
+                <div class="input-group">
+                    <label for="workoutType">Typ treningu</label>
+                    <select id="workoutType">
+                        <option value="run">Bieganie</option>
+                        <option value="bike">Rower</option>
+                        <option value="gym">Siłownia</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label for="duration">Czas trwania (minuty)</label>
+                    <input type="number" id="duration" placeholder="30" min="1">
+                </div>
+
+                <div class="input-group">
+                    <label for="distance">Dystans (km)</label>
+                    <input type="number" id="distance" placeholder="5.0" step="0.1" min="0">
+                </div>
+
+                <div class="input-group">
+                    <label for="notes">Notatki</label>
+                    <textarea id="notes" rows="3" placeholder="Jak się czułeś?"></textarea>
+                </div>
+
+                <div class="card" style="padding: 1rem;">
+                    <h3 style="margin-bottom: 1rem;">Lokalizacja</h3>
+                    <div id="map">Kliknij "Śledź trasę" aby użyć GPS</div>
+                    <div class="tracking-controls">
+                        <button class="btn btn-secondary" onclick="app.startTracking()" id="startTrackingBtn">
+                            Śledź trasę
+                        </button>
+                        <button class="btn btn-danger" onclick="app.stopTracking()" id="stopTrackingBtn"
+                            style="display: none;">
+                            Zatrzymaj
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card" style="padding: 1rem;">
+                    <h3 style="margin-bottom: 1rem;">📸 Zdjęcie postępów</h3>
+                    <img id="photoPreview" class="camera-preview" style="display: none;">
+                    <video id="cameraPreview" class="camera-preview" autoplay playsinline
+                        style="display: none;"></video>
+                    <canvas id="photoCanvas" style="display: none;"></canvas>
+                    <button class="btn btn-secondary" onclick="app.startCamera()" id="startCameraBtn">
+                        Otwórz kamerę
+                    </button>
+                    <button class="btn" onclick="app.takePhoto()" id="takePhotoBtn" style="display: none;">
+                        Zrób zdjęcie
+                    </button>
+                    <button class="btn btn-danger" onclick="app.stopCamera()" id="stopCameraBtn" style="display: none;">
+                        Zamknij kamerę
+                    </button>
+                </div>
+
+                <button class="btn" onclick="app.saveWorkout()">Zapisz trening</button>
+                <button class="btn btn-danger" onclick="app.showView('dashboardView')">Anuluj</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="view" id="detailView">
+        <div class="container">
+            <div id="detailContent"></div>
+            <button class="btn btn-danger" onclick="app.deleteWorkout()">Usuń trening</button>
+            <button class="btn" onclick="app.showView('dashboardView')">Powrót</button>
+        </div>
+    </div>
+
+    <script>
+        const app = {
+            workouts: [],
+            currentWorkout: null,
+            cameraStream: null,
+            photoData: null,
+            tracking: false,
+            trackingData: [],
+            watchId: null,
+
+            init() {
+                this.loadWorkouts();
+                this.renderWorkouts();
+                this.checkOnlineStatus();
+                this.checkNotificationPermission();
+
+                window.addEventListener('online', () => this.updateOnlineStatus(true));
+                window.addEventListener('offline', () => this.updateOnlineStatus(false));
+
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.register('sw.js')
+                        .then(reg => console.log('Service Worker zarejestrowany'))
+                        .catch(err => console.log('Błąd rejestracji SW:', err));
+                }
+            },
+
+            checkOnlineStatus() {
+                this.updateOnlineStatus(navigator.onLine);
+            },
+
+            updateOnlineStatus(isOnline) {
+                const statusBar = document.getElementById('statusBar');
+                if (isOnline) {
+                    statusBar.classList.remove('offline');
+                } else {
+                    statusBar.classList.add('offline');
+                }
+            },
+
+            checkNotificationPermission() {
+                if ('Notification' in window && Notification.permission === 'default') {
+                    document.getElementById('notificationPrompt').classList.add('show');
+                }
+            },
+
+            async requestNotificationPermission() {
+                if ('Notification' in window) {
+                    const permission = await Notification.requestPermission();
+                    if (permission === 'granted') {
+                        document.getElementById('notificationPrompt').classList.remove('show');
+                        new Notification('Fitness Tracker', {
+                            body: 'Powiadomienia zostały włączone! 💪',
+                            icon: 'icon-192.png'
+                        });
+                        this.scheduleReminder();
+                    }
+                }
+            },
+
+            scheduleReminder() {
+                setTimeout(() => {
+                    if ('Notification' in window && Notification.permission === 'granted') {
+                        new Notification('Czas na trening! 🏃', {
+                            body: 'Nie zapomnij o dzisiejszym treningu!',
+                            icon: 'icon-192.png'
+                        });
+                    }
+                }, 10000);
+            },
+
+            loadWorkouts() {
+                const saved = JSON.parse(localStorage.getItem('workouts') || '[]');
+                this.workouts = saved;
+            },
+
+            saveToStorage() {
+                localStorage.setItem('workouts', JSON.stringify(this.workouts));
+            },
+
+            renderWorkouts() {
+                const list = document.getElementById('workoutsList');
+
+                if (this.workouts.length === 0) {
+                    list.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🏃</div>
+                            <h3>Brak treningów</h3>
+                            <p>Dodaj swój pierwszy trening!</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                list.innerHTML = this.workouts.map(workout => `
+                    <div class="workout-item" onclick="app.showWorkoutDetail('${workout.id}')">
+                        <div class="workout-header">
+                            <span class="workout-type type-${workout.type}">
+                                ${workout.type === 'run' ? '🏃 Bieganie' :
+                        workout.type === 'bike' ? '🚴 Rower' : '🏋️ Siłownia'}
+                            </span>
+                            <span style="color: var(--text-light);">${workout.date}</span>
+                        </div>
+                        <div class="workout-stats">
+                            <div class="stat">
+                                <div class="stat-value">${workout.duration}</div>
+                                <div class="stat-label">Minuty</div>
+                            </div>
+                            <div class="stat">
+                                <div class="stat-value">${workout.distance || 0}</div>
+                                <div class="stat-label">Kilometry</div>
+                            </div>
+                            ${workout.location ? '<div class="stat"><div class="stat-value">📍</div><div class="stat-label">GPS</div></div>' : ''}
+                            ${workout.photo ? '<div class="stat"><div class="stat-value">📸</div><div class="stat-label">Zdjęcie</div></div>' : ''}
+                        </div>
+                    </div>
+                `).join('');
+            },
+
+            showView(viewId) {
+                document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+                document.getElementById(viewId).classList.add('active');
+
+                if (viewId === 'addView') {
+                    this.resetForm();
+                }
+            },
+
+            resetForm() {
+                document.getElementById('workoutType').value = 'run';
+                document.getElementById('duration').value = '';
+                document.getElementById('distance').value = '';
+                document.getElementById('notes').value = '';
+                document.getElementById('photoPreview').style.display = 'none';
+                document.getElementById('map').innerHTML = 'Kliknij "Śledź trasę" aby użyć GPS';
+                this.photoData = null;
+                this.trackingData = [];
+            },
+
+            async startCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment' }
+                    });
+                    this.cameraStream = stream;
+                    const video = document.getElementById('cameraPreview');
+                    video.srcObject = stream;
+                    video.style.display = 'block';
+
+                    document.getElementById('startCameraBtn').style.display = 'none';
+                    document.getElementById('takePhotoBtn').style.display = 'block';
+                    document.getElementById('stopCameraBtn').style.display = 'block';
+                } catch (error) {
+                    alert('Nie można uzyskać dostępu do kamery: ' + error.message);
+                }
+            },
+
+            takePhoto() {
+                const video = document.getElementById('cameraPreview');
+                const canvas = document.getElementById('photoCanvas');
+                const preview = document.getElementById('photoPreview');
+
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+
+                this.photoData = canvas.toDataURL('image/jpeg', 0.8);
+                preview.src = this.photoData;
+                preview.style.display = 'block';
+
+                this.stopCamera();
+            },
+
+            stopCamera() {
+                if (this.cameraStream) {
+                    this.cameraStream.getTracks().forEach(track => track.stop());
+                    this.cameraStream = null;
+                }
+
+                document.getElementById('cameraPreview').style.display = 'none';
+                document.getElementById('startCameraBtn').style.display = 'block';
+                document.getElementById('takePhotoBtn').style.display = 'none';
+                document.getElementById('stopCameraBtn').style.display = 'none';
+            },
+
+            startTracking() {
+                if ('geolocation' in navigator) {
+                    this.tracking = true;
+                    this.trackingData = [];
+
+                    document.getElementById('map').innerHTML = '🔄 Śledzenie lokalizacji...';
+                    document.getElementById('startTrackingBtn').style.display = 'none';
+                    document.getElementById('stopTrackingBtn').style.display = 'block';
+
+                    this.watchId = navigator.geolocation.watchPosition(
+                        position => {
+                            const coords = {
+                                lat: position.coords.latitude,
+                                lng: position.coords.longitude,
+                                timestamp: Date.now()
+                            };
+                            this.trackingData.push(coords);
+                            document.getElementById('map').innerHTML =
+                                `✅ Lokalizacja zapisana<br>Punkty: ${this.trackingData.length}`;
+                        },
+                        error => {
+                            alert('Błąd GPS: ' + error.message);
+                            this.stopTracking();
+                        },
+                        { enableHighAccuracy: true }
+                    );
+                } else {
+                    alert('Geolokalizacja nie jest dostępna w tej przeglądarce');
+                }
+            },
+
+            stopTracking() {
+                if (this.watchId) {
+                    navigator.geolocation.clearWatch(this.watchId);
+                    this.watchId = null;
+                }
+                this.tracking = false;
+
+                document.getElementById('startTrackingBtn').style.display = 'block';
+                document.getElementById('stopTrackingBtn').style.display = 'none';
+
+                if (this.trackingData.length > 0) {
+                    document.getElementById('map').innerHTML =
+                        `✅ Trasa zapisana<br>Punkty: ${this.trackingData.length}`;
+                }
+            },
+
+            saveWorkout() {
+                const type = document.getElementById('workoutType').value;
+                const duration = document.getElementById('duration').value;
+                const distance = document.getElementById('distance').value;
+                const notes = document.getElementById('notes').value;
+
+                if (!duration) {
+                    alert('Podaj czas trwania treningu');
+                    return;
+                }
+
+                const workout = {
+                    id: Date.now().toString(),
+                    type,
+                    duration: parseInt(duration),
+                    distance: parseFloat(distance) || 0,
+                    notes,
+                    date: new Date().toLocaleDateString('pl-PL'),
+                    photo: this.photoData,
+                    location: this.trackingData.length > 0 ? this.trackingData : null
+                };
+
+                this.workouts.unshift(workout);
+                this.saveToStorage();
+                this.renderWorkouts();
+                this.showView('dashboardView');
+
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Trening zapisany! 🎉', {
+                        body: `${duration} min ${type === 'run' ? 'biegania' : type === 'bike' ? 'jazdy na rowerze' : 'treningu'}`,
+                        icon: 'icon-192.png'
+                    });
+                }
+            },
+
+            showWorkoutDetail(id) {
+                const workout = this.workouts.find(w => w.id === id);
+                if (!workout) return;
+
+                this.currentWorkout = workout;
+
+                const content = document.getElementById('detailContent');
+                content.innerHTML = `
+                    <div class="card">
+                        <div class="workout-header">
+                            <span class="workout-type type-${workout.type}">
+                                ${workout.type === 'run' ? '🏃 Bieganie' :
+                        workout.type === 'bike' ? '🚴 Rower' : '🏋️ Siłownia'}
+                            </span>
+                            <span style="color: var(--text-light);">${workout.date}</span>
+                        </div>
+                        
+                        <div class="workout-stats" style="margin-top: 1rem;">
+                            <div class="stat">
+                                <div class="stat-value">${workout.duration}</div>
+                                <div class="stat-label">Minuty</div>
+                            </div>
+                            <div class="stat">
+                                <div class="stat-value">${workout.distance || 0}</div>
+                                <div class="stat-label">Kilometry</div>
+                            </div>
+                        </div>
+                        
+                        ${workout.notes ? `<p style="margin-top: 1rem; color: var(--text-light);">${workout.notes}</p>` : ''}
+                        
+                        ${workout.photo ? `<img src="${workout.photo}" class="camera-preview" style="display: block; margin-top: 1rem;">` : ''}
+                        
+                        ${workout.location ? `
+                            <div style="margin-top: 1rem; padding: 1rem; background: var(--bg); border-radius: 8px;">
+                                <strong>📍 Trasa GPS:</strong><br>
+                                Punkty: ${workout.location.length}<br>
+                                Start: ${workout.location[0].lat.toFixed(4)}, ${workout.location[0].lng.toFixed(4)}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+
+                this.showView('detailView');
+            },
+
+            deleteWorkout() {
+                if (!this.currentWorkout) return;
+
+                if (confirm('Czy na pewno chcesz usunąć ten trening?')) {
+                    this.workouts = this.workouts.filter(w => w.id !== this.currentWorkout.id);
+                    this.saveToStorage();
+                    this.renderWorkouts();
+                    this.showView('dashboardView');
+                }
+            }
+        };
+
+        document.addEventListener('DOMContentLoaded', () => app.init());
+    </script>
+</body>
+
+</html>
